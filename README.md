@@ -7,7 +7,7 @@ not refined
 
 # Applications
 - Hedging: Long BMBL -> unintended bet on VAL -> Long X BMBL and Short Y SRPT -> isolate idio alpha
-- Risk decomposition, portfolio construction, scenario anaysis, etc
+- Risk decomposition, portfolio construction, performance attribution, scenario anaysis, etc
 - MVO using factor returns instead of asset returns (nxn to kxk)
 - OLS: F = (B'B)^-1 B'R ≈ Factor-mimicking portfolios: F = WR
 - Beta from OLS is ex post and Signal from factor construction is ex ante
