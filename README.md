@@ -24,6 +24,7 @@ IONQ
 
 BMBL  
 ![bmbl](img/BMBL.png)
+- BMBL has high exposure to VAL factor, it also has low PB and PE
 
 SRPT  
 ![srpt](img/SRPT.png)
