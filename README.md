@@ -17,9 +17,11 @@ not refined
 
 # Performance Attribution
 Portfolio 1
-![1](img/SPY.png)
+![1](img/SPY.png)  
+
 Portfolio 2
-![2](img/mom.png)
+![2](img/mom.png)  
+
 Portfolio 3
 ![3](img/a.png)
 
