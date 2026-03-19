@@ -34,10 +34,10 @@ his_schema = {
 factor_defs = {
     "MOM": [["UMD_12_1", "UMD_6_1"], 21, 1], 
     "VAL": [["HML_5", "HML_3"], 21*12, -1],
-    "STR": [["STR_21", "STR_10"], 1, -1]
-} #i just prefer to name it like this :)
+    "STR": [["STR_21", "STR_10"], 1, -1],
+}
 categories = [c for c in pf_schema.keys() if c not in ["symbol", "ts"]]
-composite_factors = list(factor_defs.keys())+["MKT"]
+composite_factors = list(factor_defs.keys())
 risk_factors = {"categorical": categories, "numerical": []}
 #21 trading days per month
 
@@ -83,18 +83,22 @@ def construct_exposures(symbols, start_date, end_date, benchmark_symbol="MSCI", 
         for factor in factors:
             val = factor.split("_") + [0]
             lf = processor.add_log_change(factor, lf, int(val[1])*unit, int(val[2])*unit, k=k)
+    """
+    lf = processor.add_mkt_beta(lf, benchmark).rename({"MKT": "BAB_5_3"})
+    lf = processor.reverse_winsor(lf, ["BAB_5_3"], p=0.1).with_columns(BAB_5_3 = pl.col("BAB_5_3")*-1)
+    factor_defs["BAB"] = [["BAB_5_3"], 1, 1] 
+    composite_factors.append("BAB")
+    """
     for composite, (factors, _, _) in factor_defs.items():
         lf = processor.process_components(lf, factors, composite)
-        
-    lf = processor.add_mkt_beta(lf, benchmark)
+
 
     #Factor Preprocessing
     lf = lf.filter((pl.col("date")>=start_date) & (pl.col("date")<=end_date))
-
     lf = lf.join(pf, on="symbol", how="left")
     lf = lf.select(["symbol", "date"]+composite_factors+sum(risk_factors.values(), []))
     lf = processor.process_composites(lf, composite_factors, risk_factors).sort(["symbol", "date"])
-
+    
     lf = lf.select(["symbol", "date"]+composite_factors)
     lf_lagged = lf.with_columns(pl.all().exclude(["symbol", "date"]).shift(1).over("symbol")) #t-1
     exposures = lf_lagged.join(asset_ret.lazy(), on=["symbol", "date"], how="left")
@@ -119,12 +123,26 @@ def Newey_West_t_stat(df, cols):
         t_stats[c] = results.tvalues[0] 
     return pl.DataFrame(t_stats)
 
+def vol_targetting(df, cols, target_annual_vol_pct=None):
+    #scale factor returns -> Beta makes more economical sense
+    if target_annual_vol_pct is None: return df
+    target_daily_vol = target_annual_vol_pct / np.sqrt(252)
+    df = df.with_columns([
+        (pl.col(col) * (target_daily_vol / pl.col(col).std())).alias(col)
+        for col in cols
+    ])
+    return df
+
 rng = np.random.default_rng(seed=42)
-symbols = list(rng.choice(sp500_tickers, size=100, replace=False))
-exposures = construct_exposures(symbols, start_date=date(2025, 3, 15), end_date=date(2026, 3, 15), benchmark_symbol="SPY", FETCH=False)
-factor_ret = processor.get_factor_returns(exposures, composite_factors, ["log_ret"]) ##Cross Sectional Regressions at each time step
-#factor_ret.write_parquet(basepath / "Test3.parquet")
-#plotter.plot_factor_performance(factor_ret, composite_factors)
+#symbols = list(rng.choice(sp500_tickers, size=300, replace=False))
+symbols = sp500_tickers[:150]
+exposures = construct_exposures(symbols, start_date=date(2015, 1, 1), end_date=date(2026, 1, 1), benchmark_symbol="SPY", FETCH=False)
+factor_ret = processor.get_factor_returns(exposures, composite_factors, ["log_ret"]) ##Cross Sectional Regressions at each time stepfactor_ret = vol_targetting(factor_ret, composite_factors, target_annual_vol_pct=0.2)
+factor_ret = vol_targetting(factor_ret, composite_factors, target_annual_vol_pct=0.2)
+composite_factors.append("MKT") #temp fix
+
+factor_ret.write_parquet(basepath / "Test1.parquet")
+plotter.plot_factor_performance(factor_ret, composite_factors)
 #print(standard_t_stat(factor_ret, composite_factors))
 print("\nNewey-West t-stat")
 print(Newey_West_t_stat(factor_ret, composite_factors)) #?abs(t)>2
@@ -143,7 +161,7 @@ def decompose_returns(return_df, factor_ret, start_date, end_date): #could be us
 
     f_sums = [factor_ret[c].sum() if c != "alpha" else factor_ret.height for c in X_cols]
     corrs = [factor_ret.select(pl.corr("asset_ret", c)).item() for c in X_cols]
-    attr_df = pl.DataFrame({
+    result_df = pl.DataFrame({
         "Factor": X_cols,
         "Exposure": model.params,
         "Contribution": np.array(model.params) * np.array(f_sums),
@@ -153,26 +171,32 @@ def decompose_returns(return_df, factor_ret, start_date, end_date): #could be us
         pl.col("Contribution").round(2),
         pl.col("Correlation").round(2)
     ])
-    print(f"\nPerformance Attribution: {symbol} ({start_date} to {end_date})")
+    print(f"Performance Attribution: ({start_date} to {end_date})")
     print(model.summary(xname=X_cols)) 
-    print(attr_df)
-    return attr_df
+    print(result_df)
+    return model, result_df
 
-def vol_targetting(df, cols, target_annual_vol_pct=None):
-    #scale factor returns -> Beta makes more economical sense
-    if target_annual_vol_pct is None: return df
-    target_daily_vol = target_annual_vol_pct / np.sqrt(252)
-    df = df.with_columns([
-        (pl.col(col) * (target_daily_vol / pl.col(col).std())).alias(col)
-        for col in cols
+def load_portfolio(symbols):
+    print("\n", symbols)
+    portfolio_df = load_asset_ret(symbols).collect()
+    return portfolio_df.with_columns(
+        (1 / pl.col("symbol").count().over("date")).alias("weight") #suppose equal weighting
+    ).group_by("date").agg([
+        ((pl.col("weight")*pl.col("log_ret")).sum()).alias("log_ret"), #log returns are additive
+        pl.col("symbol").count().alias("n_assets")
     ])
-    return df
+        
 
-symbol = "BMBL"
-factor_ret = pl.read_parquet(basepath / "ret1.parquet")
-factor_ret = vol_targetting(factor_ret, composite_factors, target_annual_vol_pct=0.2)
-return_df = load_asset_ret(symbol).collect()
-result_df = decompose_returns(return_df, factor_ret, date(2025, 1, 1), date(2026, 1, 1))
+factor_ret = pl.read_parquet(basepath / "Test1.parquet") #could add ewma or smth
+
+portfolio_df = load_portfolio(["SPY"])
+model, result_df = decompose_returns(portfolio_df, factor_ret, date(2025, 1, 1), date(2026, 1, 1))
+
+portfolio_df = load_portfolio(["IONQ", "HIMS", "QBTS", "OKLO", "RBLX", "PLTR"])
+model, result_df = decompose_returns(portfolio_df, factor_ret, date(2025, 1, 1), date(2026, 1, 1))
+
+portfolio_df = load_portfolio(["SRPT", "BMBL", "KHC", "MHO", "PDD"])
+model, result_df = decompose_returns(portfolio_df, factor_ret, date(2025, 1, 1), date(2026, 1, 1))
 
 
 # -----//Risk Decomposition//----     

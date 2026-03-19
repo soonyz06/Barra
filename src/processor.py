@@ -3,6 +3,7 @@ from datetime import datetime, date
 from pathlib import Path
 import time
 import numpy as np
+from scipy.stats import norm
 
 class Processor:
     def __init__(self):
@@ -45,14 +46,14 @@ class Processor:
             .alias(factor)            
         )
                    
-    def winsor_factors(self, df, factors, p=0.01):
+    def winsorisation(self, df, cols, p=0.01):
         return df.with_columns([
             pl.col(f).clip(
                 pl.col(f).quantile(p).over("date"),
                 pl.col(f).quantile(1-p).over("date")
             )
             .alias(f)
-            for f in factors
+            for f in cols
         ])
 
     def combine_factors(self, df, factors, composite):
@@ -60,21 +61,21 @@ class Processor:
                pl.mean_horizontal(factors).alias(composite) #automatic reweighting (0.5*A + 0.5*B -> 1*A + 0*B when B is null), could also do sum_horizontal / used_weights
         ).drop(factors)
 
-    def znorm_factors(self, df, factors):
+    def z_normalisation(self, df, cols):
         return df.with_columns([
             (pl.col(f) - pl.col(f).mean().over("date")) / (pl.col(f).std().over("date") + 1e-8)
             .alias(f)
-            for f in factors
+            for f in cols
         ])
 
-    def rescale_factors(self, df, factors):
+    def rescaling(self, df, cols):
         return df.with_columns([
             pl.col(f).fill_nan(0) / (pl.col(f).fill_nan(None).std().over("date") + 1e-8)
             .alias(f)
-            for f in factors
+            for f in cols
         ])        
 
-    def reverse_winsor(self, df, factors, p=0.05):
+    def reverse_winsor(self, df, cols, p=0.05):
         return df.with_columns(
             pl.when(pl.col(f).is_between(
                 pl.col(f).quantile(p).over("date"),
@@ -83,14 +84,14 @@ class Processor:
             .then(pl.lit(None))
             .otherwise(pl.col(f))
             .alias(f)
-            for f in factors
+            for f in cols
         )
     
-    def median_imputation(self, df, columns): ##can improve when, what and how
+    def median_imputation(self, df, cols): ##can improve when, what and how
         groups = [["date", "industry"], ["date", "sector"], ["date"]]
         return df.with_columns(
             pl.coalesce([pl.col(c), *[pl.col(c).median().over(g) for g in groups], pl.lit(0.0)]).alias(c)
-            for c in columns
+            for c in cols
         )
 
     def one_hot_encoding(self, df, categories, drop_first=True):
@@ -110,6 +111,25 @@ class Processor:
         RHS = X.T@Y
         beta = np.linalg.solve(LHS, RHS) #solves Ax=B 
         return beta #(K, F), regardless of n
+
+    def minmax_scaling(self, df, cols):
+        return df.with_columns([
+            (pl.col(c) - pl.col(c).min().over("date")) / (pl.col(c).max().over("date") - pl.col(c).min().over("date")).alias(c)
+            for c in cols
+        ])
+
+    def rank_normalisation(self, df, cols):
+        return df.with_columns([
+            ((pl.col(c).rank().over("date")-1) / (pl.col(c).count().over("date")-1)).alias(c)
+            for c in cols
+        ])
+
+    def gaussian_rank_normalisation(self, df, cols):
+        return df.with_columns([
+            ((pl.col(c).rank().over("date") - 0.5) / pl.col(c).count().over("date")).map_batches(lambda x: norm.ppf(x)) #inverse CDF
+            .alias(c) 
+            for c in cols
+        ])
 
     def get_residuals(self, df, X_cols, y_cols, beta):
         X = df.select(X_cols).to_numpy() #(N, K)
@@ -152,8 +172,8 @@ class Processor:
 
     def get_factor_returns(self, lf, X_cols, y_cols):
         schema = lf.select(["date", *X_cols]).collect_schema()
-        lf = lf.with_columns(pl.lit(1.0).alias("intercept"))
-        X_cols = X_cols + ["intercept"]
+        lf = lf.with_columns(pl.lit(1.0).alias("MKT"))
+        X_cols = X_cols + ["MKT"]
         
         def _cross_sectional_regression(group_df):
             betas = self.train_regression(group_df, X_cols, y_cols).flatten() #log returns per 1σ factor tilt
@@ -168,17 +188,19 @@ class Processor:
     def process_components(self, df, factors, composite):
         return (
             df
-            .pipe(self.winsor_factors, factors, p=0.01) 
-            .pipe(self.znorm_factors, factors)
+            .pipe(self.winsorisation, factors, p=0.01)
+            .pipe(self.rank_normalisation, factors)
+            .pipe(self.z_normalisation, factors)
             .pipe(self.combine_factors, factors, composite)
         )
     
     def process_composites(self, df, factors, risk_factors):
         return (
-            df.pipe(self.znorm_factors, factors)
+            df
+            .pipe(self.z_normalisation, factors)
             .pipe(self.median_imputation, risk_factors["numerical"]) 
             .pipe(self.neutralise_factors, factors, risk_factors)
-            .pipe(self.rescale_factors, factors)
+            .pipe(self.rescaling, factors)
             .pipe(self.median_imputation, factors)
         )
 
@@ -205,3 +227,8 @@ class Processor:
             )
             .drop(["mkt_ret", "asset_vol", "mkt_vol", "corr"])
         )
+
+
+
+
+    
