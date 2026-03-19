@@ -16,17 +16,10 @@ not refined
 - Differ quite a bit from actual values (Orange~VAL) due to only small sample size, different 'definition' of factors, i haven't scaled by MC (WLS), i prob overlooked something in the logic, etc
 
 # Performance Attribution
-IONQ  
-![ionq](img/IONQ.png)
-  - IONQ's returns over the past year can be largely explained by its exposure to MOM and MKT factors (high f-stat and R^2)
-
-BMBL  
-![bmbl](img/BMBL.png)
-- BMBL has high exposure to VAL, it also has low PB and PE
-
-SRPT  
-![srpt](img/SRPT.png)
-- SRPT's returns over the past year are not well explained by systematic factors
-- Idiosyncratic: Death of patients, the distribution of Elevidys being temporarily halted and fear of it being pulled from the market 
-
+Portfolio 1
+![1](img/SPY.png)
+Portfolio 2
+![2](img/mom.png)
+Portfolio 3
+![3](img/a.png)
 
